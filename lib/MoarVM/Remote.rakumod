@@ -54,6 +54,8 @@ our enum MessageType is export <
     MT_HandleEquivalenceResponse
     MT_HLLSymbolRequest
     MT_HLLSymbolResponse
+    MT_LoadedFilesRequest
+    MT_FileLoadedNotification
 >;
 
 class X::MoarVM::Remote::ProtocolError is Exception {
@@ -117,6 +119,9 @@ class MoarVM::Remote {
     has %!event-suppliers;
 
     has %!breakpoint-to-event{Any};
+
+    has Lock $!filenames-lock .= new;
+    has @!filenames;
 
     has Lock $!id-lock .= new;
     has int32 $!req_id = 1;
@@ -411,6 +416,33 @@ class MoarVM::Remote {
         })
     }
 
+    method get-filenames() {
+        if $!remote-version before v1.4 {
+            fail "get-filenames requires remote version 1.4 or greater, but remote version is $!remote-version";
+        }
+        self!send-request(MT_LoadedFilesRequest, :start_watching).then(-> $prom {
+            note "result from loaded files request: ", $prom.result.&to-json(:pretty) if $!debug;
+            my $result = $prom.result;
+            $!filenames-lock.protect({
+                @!filenames := $result<filenames>.map(*.<path>).Array;
+            });
+            %!event-suppliers{$result<id>} = my $sup = Supplier::Preserving.new;
+            $sup.Supply.tap({
+                note "notification on the loaded files request supply", $_.raku if $!debug;
+                $!filenames-lock.protect({
+                    for .<filenames>.list {
+                        if .<path> !(elem) @!filenames {
+                            @!filenames.push: .<path>;
+                        }
+                    }
+                })
+            });
+            my %ret = flat @($result.hash), "notifications" => $sup.Supply;
+            note %ret.raku if $!debug;
+            %ret;
+        });
+    }
+
     method release-handles(+@handles) {
         my @handles-cleaned = @handles.map(+*);
         self!send-request(MT_ReleaseHandles, handles => @handles-cleaned).then({
@@ -512,6 +544,12 @@ class MoarVM::Remote {
                 .result<classes>.List if .result<type> == MT_HandleEquivalenceResponse
             });
         }
+    }
+
+    method filenames {
+        $!filenames-lock.protect({
+            my @ = @!filenames[].eager;
+        });
     }
 }
 
