@@ -116,7 +116,7 @@ class MoarVM::Remote {
 
     has %!event-suppliers;
 
-    has %!breakpoint-to-event{Any};
+    has %!breakpoint-to-event;
 
     has Lock $!id-lock .= new;
     has int32 $!req_id = 1;
